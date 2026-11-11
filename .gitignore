@@ -1,0 +1,10 @@
+.runtime/
+dist/
+installer/
+Presets/Transform motion blur.prfpset
+build/cert.p12
+build/zip/com.openclick2/
+*.debug
+*.log
+Thumbs.db
+desktop.ini

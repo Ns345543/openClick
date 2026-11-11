@@ -1,0 +1,142 @@
+:root {
+  --oc-panel-bg: #232323;
+  --oc-text: #d6d6d6;
+  --oc-muted: #9a9a9a;
+
+  --oc-tool-max: 44px;
+  --oc-tool-radius: 3px;
+  --oc-tool-gap: 4px;
+  --oc-toolbar-padding: 6px;
+
+  --oc-tool-bg: #1473e6;
+  --oc-tool-color: #ffffff;
+  --oc-tool-hover-bg: #2680eb;
+  --oc-tool-press-bg: #0d66d0;
+  --oc-slot-bg: #2b2b2b;
+  --oc-slot-border: #3a3a3a;
+  --oc-focus-ring: #8b7ef8;
+
+  --oc-status-ok: #9dbb9d;
+  --oc-status-error: #dd8f8f;
+  --oc-status-pending: #8f8f8f;
+
+  --oc-font: "Segoe UI", Arial, sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--oc-panel-bg);
+  color: var(--oc-text);
+  font-family: var(--oc-font);
+  font-size: 11px;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#toolbar {
+  flex: 0 1 auto;
+  min-height: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: var(--oc-tool-gap);
+  padding: var(--oc-toolbar-padding) 3px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.tool {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  max-width: var(--oc-tool-max);
+  aspect-ratio: 1 / 1;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--oc-tool-radius);
+  background: var(--oc-tool-bg);
+  color: var(--oc-tool-color);
+  cursor: default;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.tool:hover {
+  background: var(--oc-tool-hover-bg);
+}
+
+.tool:active {
+  background: var(--oc-tool-press-bg);
+}
+
+.tool:focus-visible {
+  outline: 1px solid var(--oc-focus-ring);
+  outline-offset: 1px;
+}
+
+.tool.busy {
+  opacity: 0.65;
+  cursor: progress;
+}
+
+.tool-icon {
+  width: 60%;
+  height: 60%;
+  max-width: 26px;
+  max-height: 26px;
+  display: block;
+  pointer-events: none;
+}
+
+.tool-slot {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--oc-tool-max);
+  aspect-ratio: 1 / 1;
+  border: 1px solid var(--oc-slot-border);
+  border-radius: var(--oc-tool-radius);
+  background: var(--oc-slot-bg);
+}
+
+#status {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: auto;
+  padding: 4px 8px 10px;
+  color: var(--oc-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+#status:empty {
+  display: none;
+}
+
+#status.ok {
+  color: var(--oc-status-ok);
+}
+
+#status.error {
+  color: var(--oc-status-error);
+}
+
+#status.pending {
+  color: var(--oc-status-pending);
+}

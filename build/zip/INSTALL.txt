@@ -1,0 +1,63 @@
+openClick 1.0.2
+Manual installation for Adobe Premiere Pro (Windows)
+
+Requirements
+- Adobe Premiere Pro 2022 (22.0) or newer. Tested on Premiere Pro 2026 (26.5.2).
+- The extension uses CEP (Common Extensibility Platform).
+
+Upgrading
+- openClick uses the extension ID com.openclick2. It does not replace the retired
+  com.openclick panel or its com.openclick.probe test build. If either folder still
+  exists, close Premiere Pro and delete it:
+    C:\Users\<your user>\AppData\Roaming\Adobe\CEP\extensions\com.openclick
+    C:\Users\<your user>\AppData\Roaming\Adobe\CEP\extensions\com.openclick.probe
+- This package also does not replace the original "Adjustment Layer Creator" build
+  (com.adjustmentlayer.creator). Delete that folder too if it is still installed.
+
+Install
+1. Close Premiere Pro.
+2. Copy the "com.openclick2" folder from this archive into:
+     C:\Users\<your user>\AppData\Roaming\Adobe\CEP\extensions\
+   Create the "extensions" folder if it does not exist.
+   The final layout must be:
+     ...\Adobe\CEP\extensions\com.openclick2\CSXS\manifest.xml
+3. Enable loading of manually installed extensions:
+   - Open Registry Editor (regedit).
+   - Create the key  HKEY_CURRENT_USER\SOFTWARE\Adobe\CSXS.12
+     if it does not exist.
+   - Add a String value named  PlayerDebugMode  with data  1
+   - Do the same for  HKEY_CURRENT_USER\SOFTWARE\Adobe\CSXS.13  if that
+     key exists or if the panel does not appear under CSXS.12.
+4. Start Premiere Pro and open a project.
+5. Open  Window > Extensions > openClick.
+6. Select one or more video clips in the timeline and click the
+   adjustment layer tool in the panel. Each selected clip gets its own
+   adjustment layer with matching In and Out points.
+   Shift+click the tool to create one combined adjustment layer across
+   all selected clips instead.
+   Every new layer already carries the Transform(openClick) preset in its
+   Effect Controls; nothing needs to be imported.
+
+Uninstall
+- Close Premiere Pro and delete the com.openclick2 folder.
+
+Notes
+- Use this ZIP or the signed .zxp, not both: installing both puts the
+  same extension ID in Premiere twice.
+- PlayerDebugMode is required only for this manual ZIP installation.
+  The signed .zxp does not need it.
+- The panel creates a genuine adjustment layer above each selected clip,
+  matching that clip's In and Out points exactly. It never overwrites or
+  deletes existing timeline content. If the track above is occupied in that
+  time range, it searches upward for the first free track (including layers
+  placed earlier in the same run) and adds a new track only when every
+  track above is occupied.
+- Shift+click creates a single layer from the earliest selected In point to
+  the latest selected Out point, above the highest selected track so it
+  affects every selected clip. A single selected clip behaves the same with
+  either click.
+- Each new layer is created with the Transform(openClick) preset applied:
+  a Transform effect with "Uniform Scale" checked, "Use Composition's
+  Shutter Angle" off, Shutter Angle 360, and Sampling 0. If the effect
+  cannot be applied, the layer is removed again and the panel reports the
+  failure.
