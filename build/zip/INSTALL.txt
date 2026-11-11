@@ -1,4 +1,4 @@
-openClick 1.0.2
+openClick 1.0.3
 Manual installation for Adobe Premiere Pro (Windows)
 
 Requirements
@@ -37,6 +37,10 @@ Install
    all selected clips instead.
    Every new layer already carries the Transform(openClick) preset in its
    Effect Controls; nothing needs to be imported.
+   New layers also use the Mango label color.
+   The second tool nests clips: click to nest each selected clip, Shift+click
+   to nest all selected clips into one, Alt+click to unnest every nested clip
+   on the active sequence.
 
 Uninstall
 - Close Premiere Pro and delete the com.openclick2 folder.

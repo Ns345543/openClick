@@ -1,10 +1,10 @@
 (function () {
   "use strict";
 
-  var button = document.getElementById("add-layer");
-  var status = document.getElementById("status");
+  var layerButton = document.getElementById("add-layer");
+  var nestButton = document.getElementById("nest-clips");
+  var statusLine = document.getElementById("status");
   var pending = false;
-  var clearTimer = null;
 
   // Resolves the extension folder on any Windows install location: the
   // per-user folder, the all-users "Program Files (x86)\Common Files" folder,
@@ -57,40 +57,66 @@
     return extensionRoot() + "/presets/Transform(openClick).prfpset";
   }
 
-  function show(message, kind) {
-    status.textContent = message;
-    status.className = kind || "";
-    if (clearTimer) {
-      clearTimeout(clearTimer);
-      clearTimer = null;
+  function log(message, kind) {
+    if (!message || !window.console) {
+      return;
     }
-    if (message) {
-      clearTimer = setTimeout(function () {
-        status.textContent = "";
-        status.className = "";
-        clearTimer = null;
-      }, kind === "error" ? 8000 : 4500);
+    var method = kind === "error" ? console.error : console.log;
+    if (typeof method === "function") {
+      method.call(console, "openClick: " + message);
     }
   }
 
   function setBusy(value) {
     pending = value;
-    button.disabled = value;
-    button.classList.toggle("busy", value);
-    button.setAttribute("aria-busy", value ? "true" : "false");
+    var buttons = [layerButton, nestButton];
+    for (var i = 0; i < buttons.length; i++) {
+      var button = buttons[i];
+      if (!button) {
+        continue;
+      }
+      button.disabled = value;
+      button.classList.toggle("busy", value);
+      button.setAttribute("aria-busy", value ? "true" : "false");
+    }
+  }
+
+  function showStatus(message, kind) {
+    if (!statusLine) {
+      return;
+    }
+    if (!message) {
+      statusLine.textContent = "";
+      statusLine.className = "status";
+      statusLine.hidden = true;
+      return;
+    }
+    statusLine.textContent = message;
+    statusLine.className = kind ? "status " + kind : "status";
+    statusLine.hidden = false;
   }
 
   function finish(message, kind) {
     setBusy(false);
-    show(message, kind);
+    showStatus(message, kind);
+    log(message, kind);
   }
 
-  function click(event) {
+  function replyText(raw) {
+    var text = raw === undefined || raw === null ? "" : String(raw);
+    text = text.replace(/\s+/g, " ").trim();
+    if (text === "undefined" || text === "null") {
+      return "";
+    }
+    return text.length > 400 ? text.slice(0, 400) + "..." : text;
+  }
+
+  function run(script, timeoutMs, fallback) {
     if (pending) {
       return;
     }
 
-    var combined = !!(event && event.shiftKey);
+    showStatus("");
 
     var cep = window.__adobe_cep__;
     if (!cep || typeof cep.evalScript !== "function") {
@@ -99,7 +125,6 @@
     }
 
     setBusy(true);
-    show(combined ? "Adding a combined adjustment layer\u2026" : "Adding adjustment layer\u2026", "pending");
 
     var settled = false;
     var timeout = setTimeout(function () {
@@ -108,9 +133,7 @@
       }
       settled = true;
       finish("Premiere did not respond. Try again.", "error");
-    }, 30000);
-
-    var script = "OpenClick.createAdjustmentLayer(" + scriptString(donorPath()) + ", " + (combined ? "true" : "false") + ", " + scriptString(presetPath()) + ")";
+    }, timeoutMs);
 
     try {
       cep.evalScript(script, function (raw) {
@@ -128,13 +151,18 @@
         }
 
         if (!data) {
-          finish("Premiere did not respond. Try again.", "error");
+          var reply = replyText(raw);
+          finish(reply ? "Premiere replied: " + reply : "Premiere did not respond. Try again.", "error");
           return;
         }
         if (data.ok) {
-          finish(data.message || "Adjustment layer added.", "ok");
+          finish(data.message || fallback.ok, "ok");
         } else {
-          finish(data.message || "The adjustment layer could not be added.", "error");
+          var detail = data.message || fallback.error;
+          if (data.code && data.code !== "OK") {
+            detail += " (" + data.code + ")";
+          }
+          finish(detail, "error");
         }
       });
     } catch (e) {
@@ -144,5 +172,35 @@
     }
   }
 
-  button.addEventListener("click", click);
+  function addLayer(event) {
+    if (pending) {
+      return;
+    }
+    var combined = !!(event && event.shiftKey);
+    var script = "OpenClick.createAdjustmentLayer(" + scriptString(donorPath()) + ", " + (combined ? "true" : "false") + ", " + scriptString(presetPath()) + ")";
+    run(script, 30000, {
+      ok: combined ? "Adjustment layer added across selected clips." : "Adjustment layer added.",
+      error: "The adjustment layer could not be added."
+    });
+  }
+
+  function nestClips(event) {
+    if (pending) {
+      return;
+    }
+    var combined = !!(event && event.shiftKey);
+    var unnest = !!(event && event.altKey);
+    var script = "OpenClick.nestClips(" + (combined ? "true" : "false") + ", " + (unnest ? "true" : "false") + ")";
+    run(script, unnest ? 120000 : 60000, {
+      ok: unnest ? "Unnested the nested clips." : (combined ? "Nested the selected clips into one clip." : "Nested the selected clips."),
+      error: unnest ? "The clips could not be unnested." : "The clips could not be nested."
+    });
+  }
+
+  if (layerButton) {
+    layerButton.addEventListener("click", addLayer);
+  }
+  if (nestButton) {
+    nestButton.addEventListener("click", nestClips);
+  }
 })();

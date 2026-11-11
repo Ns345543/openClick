@@ -1,26 +1,30 @@
 # openClick
 
 <p align="center">
-  <img src="docs/images/panel.png" width="144" alt="openClick panel: one blue Add Adjustment Layer tool above five placeholder slots">
+  <img src="docs/images/panel.png" width="144" alt="openClick panel: Add Adjustment Layer and Nested Clips tools above four placeholder slots">
 </p>
 
 <p align="center">
-  <b>A one-tool Adobe Premiere Pro panel that adds adjustment layers to selected clips,<br>
-  with exact timing and the Transform(openClick) preset already applied.</b>
+  <b>A two-tool Adobe Premiere Pro panel that adds adjustment layers to selected clips<br>
+  and nests or unnests clips, with exact timing and the Transform(openClick) preset applied.</b>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ns345543/openClick/releases/latest"><img src="https://img.shields.io/badge/version-1.0.2-2f81f7?style=flat-square" alt="Version 1.0.2"></a>
+  <a href="https://github.com/Ns345543/openClick/releases/latest"><img src="https://img.shields.io/badge/version-1.0.3-2f81f7?style=flat-square" alt="Version 1.0.3"></a>
   <img src="https://img.shields.io/badge/Premiere%20Pro-2022%2B-9999ff?style=flat-square" alt="Premiere Pro 2022 or newer">
   <img src="https://img.shields.io/badge/CEP-9%2B-232323?style=flat-square" alt="CEP 9 or newer">
   <img src="https://img.shields.io/badge/tested-2026%2026.5.2.5-2ea44f?style=flat-square" alt="Tested on Premiere Pro 2026 26.5.2.5">
 </p>
 
 openClick is a slim vertical toolbar styled after Premiere's native Tools panel. Select one
-or more video clips, click the blue tool, and every selected clip receives a genuine
+or more video clips, click the blue layer tool, and every selected clip receives a genuine
 adjustment layer on the first free video track above it, with the same In and Out points.
 Hold **Shift** while clicking to create one combined layer across the whole selection,
 placed above the highest selected track.
+
+The second tool nests clips: click it to nest each selected clip separately, **Shift+click**
+to nest the whole selection into one clip, or **Alt+click** to expand every nested clip on
+the active sequence back into its source clips.
 
 Existing timeline content is never moved, trimmed, replaced, or deleted.
 
@@ -37,6 +41,7 @@ Existing timeline content is never moved, trimmed, replaced, or deleted.
 | --- | --- | --- |
 | Signed ZXP | [**openClick.zxp**](https://github.com/Ns345543/openClick/releases/latest/download/openClick.zxp) | ZXP Installer, Anastasiy's Extension Manager, or `ExManCmd` |
 | Manual ZIP | [**openClick.zip**](https://github.com/Ns345543/openClick/releases/latest/download/openClick.zip) | Copy the `com.openclick2` folder into the CEP extensions folder |
+| Source | [**openClick-source.zip**](https://github.com/Ns345543/openClick/releases/latest/download/openClick-source.zip) | Repository sources for this tag (also available from GitHub's "Source code" links) |
 
 Both packages contain the same extension. The ZXP adds signature metadata; the ZIP adds
 `INSTALL.txt`. Neither package contains a `.debug` file. Install one format only.
@@ -112,6 +117,26 @@ The same instructions ship as `INSTALL.txt` inside the ZIP.
 | Locked track above | Skipped, because content cannot be placed on it; the search continues upward. |
 | No video clip selected | Nothing is created; the panel asks for a video clip. |
 | No project or active sequence | Nothing is created; the panel reports the state. |
+
+Every created adjustment layer carries the **Mango** label color, so layers are easy to
+spot in the timeline and project panel.
+
+### Nested Clips
+
+The second tool works on the current selection:
+
+| Action | Result |
+| --- | --- |
+| **Click**, one or more clips selected | Each selected clip is replaced by its own nested-sequence clip, with the same In and Out points. |
+| **Shift+click**, several clips selected | All selected clips are replaced by one nested-sequence clip spanning the selection. |
+| **Alt+click** | Every nested clip on the active sequence is expanded back into its source clips, at their original positions. |
+
+Unnesting restores trimmed clips through subclips (Premiere's overwrite call does not honor
+project-item In/Out points), keeps the restored clips selected, and only reports success
+when the timeline diff shows nothing but nest clips removed and source clips added inside
+the nest ranges. If any nest cannot be expanded safely, nothing is changed. Effects or
+speed changes applied *inside* a nest are not recreated, and the emptied nested sequences
+stay in the project panel.
 
 ## The Transform(openClick) preset
 
@@ -191,6 +216,11 @@ project and frame rate.
 - Track search validated for immediate free track, occupied tracks, all tracks occupied,
   boundary-touching clips, and locked tracks.
 - The donor sequence was removed after placement; no duplicate items were left behind.
+- Nesting validated live in Premiere: 7 of 7 nests placed correctly across multi-selection,
+  consecutive linked clips, and Shift+click combined nesting.
+- Unnest validated against a mock of the Premiere API covering 18 scenarios: single and
+  combined nests, trimmed sources, multi-nest commands, subclip unit quirks, and refusals
+  that leave the timeline untouched. Live Alt+click confirmation is still in progress.
 - Panel driven with real mouse clicks under the `com.openclick2` ID; the toolbar renders,
   the status line reports the result, and the layout was checked at 30, 48, 120, and
   ~160 px panel widths with no tool pushed out of view.
@@ -202,16 +232,17 @@ The panel is a column of square tool boxes that mirrors Premiere's Tools panel: 
 ring. The column is anchored at the top-left and follows the panel width, so the tools stay
 visible when the panel is narrowed.
 
-The first slot is the live **Add Adjustment Layer** tool (blue). The five slots below it
-are inert placeholders reserving space for future tools. Replacing a placeholder means
-swapping its `<span class="tool-slot">` for a `<button class="tool">` with an inline SVG;
-hover, press, focus, and busy states are already defined.
+The first two slots are the live **Add Adjustment Layer** and **Nested Clips** tools. The
+four slots below them are inert placeholders reserving space for future tools. Replacing a
+placeholder means swapping its `<span class="tool-slot">` for a `<button class="tool">` with
+an inline SVG; hover, press, focus, and busy states are already defined.
 
 Each box uses `width: 100%; max-width: 44px; aspect-ratio: 1`, so it fills a narrow panel
 edge to edge and caps at 44 px on a wide one. Visual values live in CSS custom properties
 at the top of `css/style.css`. The default panel size is 64 x 320 px (minimum 48 x 120,
-maximum 320 x 1200), and the toolbar scrolls if the stack outgrows the panel. Status
-messages are centered at the bottom; widen the panel to read a long message comfortably.
+maximum 320 x 1200), and the toolbar scrolls if the stack outgrows the panel. A compact
+developer status line sits under the toolbar and shows the last result or error code; it is
+hidden when empty. Widen the panel to read a long message comfortably.
 
 ## Project layout
 
@@ -246,6 +277,13 @@ ZXPSignCmd -verify dist/openClick.zxp -certInfo
 The manual ZIP is built from `build/zip/`, which contains `INSTALL.txt` and the
 `com.openclick2` folder, using any ZIP tool that preserves relative paths. `build.cmd`
 runs the packaging script on Windows.
+
+## Release notes: 1.0.3
+
+- New **Nested Clips** tool: click nests each selected clip separately, Shift+click nests
+  the selection into one clip, Alt+click unnests every nested clip on the sequence.
+- Adjustment layers now use the **Mango** label color.
+- The panel has a compact status line that reports the last message and error code.
 
 ## Release notes: 1.0.2
 
