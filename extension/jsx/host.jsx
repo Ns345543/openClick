@@ -39,11 +39,22 @@
                 projectPath: "",
                 rateTicks: "",
                 adjustmentNodeId: "",
+                donorSequenceId: "",
+                adjustmentItem: null,
                 effectCacheKey: "",
-                effectLookup: ""
+                effectLookup: "",
+                presetKey: "",
+                preset: null
             };
         }
         return $.global.__ALC_STATE__;
+    }
+
+    function invalidateAdjustmentCache() {
+        var cache = state();
+        cache.adjustmentNodeId = "";
+        cache.donorSequenceId = "";
+        cache.adjustmentItem = null;
     }
 
     function selectionItems(sequence) {
@@ -89,64 +100,209 @@
         return result;
     }
 
-    function videoClipMap(sequence) {
+    // Only the selected clips' tracks are needed. Scanning every video clip in
+    // the timeline cost more the larger the project was, so this stops as soon
+    // as each selected clip has been located.
+    function selectedVideoMap(sequence, selectedItems) {
+        var wanted = {};
+        var ids = [];
+        var i;
+        for (i = 0; i < selectedItems.length; i++) {
+            var selectedId = "";
+            try { selectedId = String(selectedItems[i].nodeId); } catch (eSelectedId) { selectedId = ""; }
+            if (!selectedId || wanted[selectedId]) continue;
+            wanted[selectedId] = true;
+            ids.push(selectedId);
+        }
+
         var map = {};
+        var remaining = ids.length;
         var trackCount = 0;
         try { trackCount = sequence.videoTracks.numTracks; } catch (eCount) { trackCount = 0; }
-        for (var t = 0; t < trackCount; t++) {
+        for (var t = 0; t < trackCount && remaining > 0; t++) {
             var track = sequence.videoTracks[t];
             var clipCount = 0;
             try { clipCount = track.clips.numItems; } catch (eClips) { clipCount = 0; }
-            for (var c = 0; c < clipCount; c++) {
+            for (var c = 0; c < clipCount && remaining > 0; c++) {
                 var clip = track.clips[c];
                 var nodeId = "";
                 try { nodeId = String(clip.nodeId); } catch (eId) { nodeId = ""; }
-                if (nodeId) map[nodeId] = { trackIndex: t, clip: clip };
+                if (!nodeId || !wanted[nodeId] || map[nodeId]) continue;
+                map[nodeId] = { trackIndex: t, clip: clip };
+                remaining--;
             }
         }
         return map;
     }
 
-    function sequenceBelongsToProject(project, sequence) {
-        var targetId = "";
-        try { targetId = String(sequence.sequenceID); } catch (eId) { return false; }
-        var count = 0;
-        try { count = project.sequences.numSequences; } catch (eCount) { return false; }
-        for (var i = 0; i < count; i++) {
-            var id = "";
-            try { id = String(project.sequences[i].sequenceID); } catch (eSeq) { id = ""; }
-            if (id === targetId) return true;
-        }
-        return false;
+    // project.activeSequence already belongs to this project, so scanning every
+    // sequence only added cost on large projects. Readability is enough.
+    function activeSequenceReadable(sequence) {
+        if (!sequence) return false;
+        var id = "";
+        try { id = String(sequence.sequenceID); } catch (eId) { return false; }
+        if (!id) return false;
+        try { sequence.videoTracks.numTracks; } catch (eTracks) { return false; }
+        return true;
     }
 
-    function snapshotTimeline(sequence) {
+    function findSequenceById(project, sequenceId) {
+        if (!sequenceId) return null;
+        var count = 0;
+        try { count = project.sequences.numSequences; } catch (eCount) { return null; }
+        for (var i = 0; i < count; i++) {
+            var sequence = null;
+            try { sequence = project.sequences[i]; } catch (eSeq) { sequence = null; }
+            var id = "";
+            try { id = String(sequence.sequenceID); } catch (eId) { id = ""; }
+            if (id === String(sequenceId)) return sequence;
+        }
+        return null;
+    }
+
+    // A single track's clip inventory. Verifying a placement only needs the
+    // track that was written to; scanning the whole timeline twice per layer is
+    // what made clicks slow in large projects.
+    function snapshotTrackClips(track, type, trackIndex, withItemId) {
         var snapshot = [];
-        var groups = [
-            { type: "video", tracks: sequence.videoTracks },
-            { type: "audio", tracks: sequence.audioTracks }
-        ];
-        for (var g = 0; g < groups.length; g++) {
-            var trackCount = 0;
-            try { trackCount = groups[g].tracks.numTracks; } catch (eCount) { trackCount = 0; }
-            for (var t = 0; t < trackCount; t++) {
-                var track = groups[g].tracks[t];
-                var clipCount = 0;
-                try { clipCount = track.clips.numItems; } catch (eClips) { clipCount = 0; }
-                for (var c = 0; c < clipCount; c++) {
-                    var clip = track.clips[c];
-                    var nodeId = "";
-                    try { nodeId = String(clip.nodeId); } catch (eId) { nodeId = ""; }
-                    snapshot.push({
-                        key: groups[g].type + ":" + nodeId,
-                        type: groups[g].type,
-                        trackIndex: t,
-                        nodeId: nodeId,
-                        startTicks: String(ticksOf(clip.start)),
-                        endTicks: String(ticksOf(clip.end))
-                    });
-                }
+        var count = 0;
+        try { count = track.clips.numItems; } catch (eCount) { count = 0; }
+        for (var c = 0; c < count; c++) {
+            var clip = track.clips[c];
+            var nodeId = "";
+            try { nodeId = String(clip.nodeId); } catch (eId) { nodeId = ""; }
+            var itemNodeId = "";
+            if (withItemId) {
+                try {
+                    var projectItem = clip.projectItem;
+                    if (projectItem) itemNodeId = String(projectItem.nodeId);
+                } catch (eItem) { itemNodeId = ""; }
             }
+            snapshot.push({
+                key: type + ":" + nodeId,
+                type: type,
+                trackIndex: trackIndex,
+                nodeId: nodeId,
+                projectItemNodeId: itemNodeId,
+                startTicks: String(ticksOf(clip.start)),
+                endTicks: String(ticksOf(clip.end))
+            });
+        }
+        return snapshot;
+    }
+
+    // Every clip property read crosses into Premiere, so a click that touched a
+    // busy track used to pay for several full scans of it. One inventory per
+    // video track per click is built here and kept up to date as layers are
+    // inserted, so collision checks and placement verification read plain
+    // numbers instead of the timeline.
+    function buildTimelineIndex(sequence) {
+        return { sequence: sequence, tracks: [] };
+    }
+
+    function indexTrack(index, trackIndex) {
+        if (index.tracks[trackIndex]) return index.tracks[trackIndex];
+        var track = null;
+        try { track = index.sequence.videoTracks[trackIndex]; } catch (eTrack) { track = null; }
+        if (!track) {
+            index.tracks[trackIndex] = null;
+            return null;
+        }
+        var ranges = [];
+        var count = 0;
+        try { count = track.clips.numItems; } catch (eCount) { count = 0; }
+        for (var i = 0; i < count; i++) {
+            var clip = null;
+            try { clip = track.clips[i]; } catch (eClip) { clip = null; }
+            if (!clip) continue;
+            var start = NaN;
+            var end = NaN;
+            try {
+                start = ticksOf(clip.start);
+                end = ticksOf(clip.end);
+            } catch (eTime) {
+                continue;
+            }
+            if (!isFinite(start) || !isFinite(end)) continue;
+            ranges.push({ start: start, end: end });
+        }
+        var entry = { track: track, ranges: ranges };
+        index.tracks[trackIndex] = entry;
+        return entry;
+    }
+
+    function indexInsert(index, trackIndex, startTicks, endTicks) {
+        var entry = index.tracks[trackIndex];
+        if (!entry) return;
+        var at = 0;
+        while (at < entry.ranges.length && entry.ranges[at].start < startTicks) at++;
+        entry.ranges.splice(at, 0, { start: startTicks, end: endTicks });
+    }
+
+    function dropTrackIndex(index, trackIndex) {
+        if (index && typeof trackIndex === "number") index.tracks[trackIndex] = null;
+    }
+
+    function getClipAt(track, position) {
+        if (position < 0) return null;
+        try { return track.clips[position]; } catch (e) { return null; }
+    }
+
+    // Clips come back in timeline order, so the inserted layer sits at the
+    // number of earlier starts. The guess is only a shortcut: if the clip there
+    // is not an exact range match, fall back to a linear scan.
+    function locateLayerAt(track, startTicks, endTicks, guess) {
+        if (typeof guess === "number" && guess >= 0) {
+            var guessed = getClipAt(track, guess);
+            if (guessed && clipRangeMatches(guessed, startTicks, endTicks)) return guess;
+        }
+        var count = 0;
+        try { count = track.clips.numItems; } catch (eCount) { count = 0; }
+        for (var i = 0; i < count; i++) {
+            var clip = getClipAt(track, i);
+            if (clip && clipRangeMatches(clip, startTicks, endTicks)) return i;
+        }
+        return -1;
+    }
+
+    function clipRangeMatches(clip, startTicks, endTicks) {
+        var start = NaN;
+        var end = NaN;
+        try {
+            start = ticksOf(clip.start);
+            end = ticksOf(clip.end);
+        } catch (e) {
+            return false;
+        }
+        return start === startTicks && end === endTicks;
+    }
+
+    function appendTrackSnapshot(snapshot, track, type, trackIndex) {
+        var part = snapshotTrackClips(track, type, trackIndex, true);
+        for (var k = 0; k < part.length; k++) snapshot.push(part[k]);
+    }
+
+    function snapshotTracks(sequence, videoIndices, audioIndices) {
+        var snapshot = [];
+        var seen = {};
+        var i;
+        for (i = 0; i < videoIndices.length; i++) {
+            var videoIndex = videoIndices[i];
+            if (seen["v" + videoIndex]) continue;
+            seen["v" + videoIndex] = true;
+            var videoTrack = null;
+            try { videoTrack = sequence.videoTracks[videoIndex]; } catch (eVideo) { videoTrack = null; }
+            if (!videoTrack) continue;
+            appendTrackSnapshot(snapshot, videoTrack, "video", videoIndex);
+        }
+        for (i = 0; i < audioIndices.length; i++) {
+            var audioIndex = audioIndices[i];
+            if (seen["a" + audioIndex]) continue;
+            seen["a" + audioIndex] = true;
+            var audioTrack = null;
+            try { audioTrack = sequence.audioTracks[audioIndex]; } catch (eAudio) { audioTrack = null; }
+            if (!audioTrack) continue;
+            appendTrackSnapshot(snapshot, audioTrack, "audio", audioIndex);
         }
         return snapshot;
     }
@@ -177,6 +333,21 @@
             }
         }
         return { added: added, removed: removed, changed: changed };
+    }
+
+    function findProjectItemInSequences(project, nodeId) {
+        var count = 0;
+        try { count = project.sequences.numSequences; } catch (eCount) { return null; }
+        for (var i = 0; i < count; i++) {
+            var sequence = null;
+            try { sequence = project.sequences[i]; } catch (eSeq) { sequence = null; }
+            var item = null;
+            try { item = sequence.projectItem; } catch (eItem) { item = null; }
+            var id = "";
+            try { id = String(item.nodeId); } catch (eId) { id = ""; }
+            if (id && id === String(nodeId)) return item;
+        }
+        return null;
     }
 
     function findProjectItemByNodeId(node, nodeId) {
@@ -386,11 +557,36 @@
         var rateTicks = rateTicksOf(sequence);
         var uid = donorUidFor(rateTicks);
 
-        if (cache.projectPath === projectPath && cache.adjustmentNodeId &&
+        if (cache.projectPath === projectPath &&
             String(cache.rateTicks) === String(rateTicks)) {
-            var cached = findProjectItemByNodeId(project.rootItem, cache.adjustmentNodeId);
-            if (cached) return { ok: true, item: labelAdjustmentItem(cached), importedSequenceItem: null };
+            // Reuse the cached item handle: walking the project tree on every
+            // click is expensive once a project holds thousands of items.
+            var cachedItem = cache.adjustmentItem;
+            var cachedId = "";
+            if (cachedItem) {
+                try { cachedId = String(cachedItem.nodeId); } catch (eCachedId) { cachedId = ""; }
+            }
+            if (cachedItem && cachedId && cachedId === String(cache.adjustmentNodeId)) {
+                return { ok: true, item: labelAdjustmentItem(cachedItem), importedSequenceItem: null };
+            }
+            // The donor sequence holds exactly one layer clip, so re-reading it
+            // is a cheap, reliable way to recover a lost handle.
+            var cachedSequence = findSequenceById(project, cache.donorSequenceId);
+            if (cachedSequence) {
+                var cachedLayer = findAdjustmentClip(cachedSequence);
+                if (cachedLayer) {
+                    var recovered = null;
+                    try { recovered = cachedLayer.projectItem; } catch (eRecovered) { recovered = null; }
+                    if (recovered) {
+                        cache.adjustmentItem = recovered;
+                        cache.adjustmentNodeId = String(recovered.nodeId);
+                        return { ok: true, item: labelAdjustmentItem(recovered), importedSequenceItem: null };
+                    }
+                }
+            }
             cache.adjustmentNodeId = "";
+            cache.donorSequenceId = "";
+            cache.adjustmentItem = null;
         }
 
         var donorSequence = findSequenceByUid(project, uid);
@@ -432,7 +628,12 @@
         if (!item) {
             var itemNodeId = "";
             try { itemNodeId = String(layerClip.projectItem.nodeId); } catch (eNode) { itemNodeId = ""; }
-            if (itemNodeId) item = findProjectItemByNodeId(project.rootItem, itemNodeId);
+            // Last resort for builds that do not expose a clip's project item
+            // directly: search the donor sequence item's containing bin first.
+            if (itemNodeId) {
+                item = findProjectItemInSequences(project, itemNodeId);
+                if (!item) item = findProjectItemByNodeId(project.rootItem, itemNodeId);
+            }
         }
         if (!item) {
             return { ok: false, code: "NO_ADJUSTMENT_ITEM", message: "The layer source is unavailable. Reinstall the extension." };
@@ -444,6 +645,9 @@
         cache.projectPath = projectPath;
         cache.rateTicks = String(rateTicks);
         cache.adjustmentNodeId = String(item.nodeId);
+        cache.adjustmentItem = item;
+        cache.donorSequenceId = "";
+        try { cache.donorSequenceId = String(donorSequence.sequenceID); } catch (eDonorId) { cache.donorSequenceId = ""; }
 
         return {
             ok: true,
@@ -496,7 +700,17 @@
         return after > before;
     }
 
-    function findInsertedLayer(track, startTicks, endTicks) {
+    // `guess` is the index of the inserted layer from the timeline index. When
+    // it is correct this reads a single clip instead of scanning the track; the
+    // linear scan remains as a correctness fallback.
+    function findInsertedLayer(track, startTicks, endTicks, guess) {
+        var position = locateLayerAt(track, startTicks, endTicks, guess);
+        if (position >= 0) {
+            var found = getClipAt(track, position);
+            var foundIsLayer = false;
+            try { foundIsLayer = found.isAdjustmentLayer() === true; } catch (eFound) { foundIsLayer = false; }
+            if (foundIsLayer) return found;
+        }
         var count = 0;
         try { count = track.clips.numItems; } catch (eCount) { return null; }
         for (var i = 0; i < count; i++) {
@@ -511,7 +725,32 @@
         return null;
     }
 
-    function rollbackLayer(track, startTicks, endTicks) {
+    function rollbackLayer(track, startTicks, endTicks, timeline, trackIndex) {
+        // With the timeline index the layer is at the slot before the first
+        // later start; touching it directly avoids a full track scan on every
+        // failure path.
+        var entry = (timeline && typeof trackIndex === "number") ? indexTrack(timeline, trackIndex) : null;
+        if (entry) {
+            var guess = 0;
+            while (guess < entry.ranges.length && entry.ranges[guess].start < startTicks) guess++;
+            var candidate = getClipAt(track, guess);
+            if (candidate && clipRangeMatches(candidate, startTicks, endTicks)) {
+                var candidateIsLayer = false;
+                try { candidateIsLayer = candidate.isAdjustmentLayer() === true; } catch (eCandidate) { candidateIsLayer = false; }
+                if (candidateIsLayer) {
+                    try {
+                        candidate.remove(0, 0);
+                        dropTrackIndex(timeline, trackIndex);
+                        return true;
+                    } catch (eRemoveTargeted) {
+                        dropTrackIndex(timeline, trackIndex);
+                        return false;
+                    }
+                }
+            }
+            dropTrackIndex(timeline, trackIndex);
+        }
+
         var count = 0;
         try { count = track.clips.numItems; } catch (eCount) { return false; }
         for (var i = 0; i < count; i++) {
@@ -524,6 +763,7 @@
             if (clipStart < endTicks && clipEnd > startTicks) {
                 try {
                     clip.remove(0, 0);
+                    dropTrackIndex(timeline, trackIndex);
                     return true;
                 } catch (eRemove) {
                     return false;
@@ -534,11 +774,14 @@
     }
 
     // QE track items interleave empty gaps, so the inserted clip has to be
-    // found by type and exact tick range rather than by a fixed index.
-    function findQeClipItem(trackIndex, startTicks, endTicks) {
+    // found by type and exact tick range rather than by a fixed index. The
+    // caller passes the active sequence once per run instead of re-fetching it
+    // for every lookup.
+    function findQeClipItem(trackIndex, startTicks, endTicks, qeSequence) {
         if (typeof qe === "undefined" || !qe) return null;
-        var qeSequence = null;
-        try { qeSequence = qe.project.getActiveSequence(); } catch (eSeq) { qeSequence = null; }
+        if (!qeSequence) {
+            try { qeSequence = qe.project.getActiveSequence(); } catch (eSeq) { qeSequence = null; }
+        }
         if (!qeSequence) return null;
         var qeTrack = null;
         try { qeTrack = qeSequence.getVideoTrackAt(trackIndex); } catch (eTrack) { qeTrack = null; }
@@ -649,6 +892,15 @@
         if (!file) return null;
         var modified = "";
         try { modified = String(file.modified.getTime()); } catch (eModified) { modified = ""; }
+        var filePath = "";
+        try { filePath = String(file.fsName); } catch (ePath) { filePath = String(file); }
+
+        // The preset only changes when the file is edited; parsing its XML on
+        // every click was wasted work.
+        var cache = state();
+        var cacheKey = filePath + "|" + modified;
+        if (cache.presetKey === cacheKey && cache.preset) return cache.preset;
+
         var text = "";
         try {
             file.encoding = "UTF-8";
@@ -695,7 +947,10 @@
         params.sort(function (a, b) { return a.index - b.index; });
         if (params.length === 0) return null;
 
-        return { matchName: matchName, displayName: displayName, params: params, modified: modified };
+        var preset = { matchName: matchName, displayName: displayName, params: params, modified: modified };
+        cache.presetKey = cacheKey;
+        cache.preset = preset;
+        return preset;
     }
 
     function valuesEqual(a, b) {
@@ -716,8 +971,8 @@
 
     // The effect that the last addVideoEffect call created: the fresh layer
     // only carries Opacity and Motion, so it is the last other component.
-    function findAddedComponent(track, startTicks, endTicks) {
-        var clip = findInsertedLayer(track, startTicks, endTicks);
+    function findAddedComponent(track, startTicks, endTicks, position) {
+        var clip = findInsertedLayer(track, startTicks, endTicks, position);
         if (!clip) return null;
         var components = null;
         try { components = clip.components; } catch (eComponents) { return null; }
@@ -825,67 +1080,94 @@
     // parameter set is accepted in place instead of deleting and re-adding the
     // layer, which made the timeline flicker. Returns { ok, exact } where exact
     // means the effect match name equals the preset's.
-    function applyLayerPreset(preset, trackIndex, track, startTicks, endTicks, replaceLayer) {
+    function applyLayerPreset(preset, trackIndex, track, startTicks, endTicks, replaceLayer, layerPosition) {
         try { app.enableQE(); } catch (eEnable) { return { ok: false }; }
 
-        var candidates = presetEffectCandidates(preset);
-        if (candidates.length === 0) return { ok: false };
+        var qeSequence = null;
+        try { qeSequence = qe.project.getActiveSequence(); } catch (eQeSequence) { qeSequence = null; }
 
         // Remember which lookup produced a working effect so later clicks go
         // straight to it instead of probing every name again.
         var cache = state();
         var cacheKey = preset.matchName + "|" + preset.params.length + "|" + preset.modified;
         var cachedLookup = cache.effectCacheKey === cacheKey ? cache.effectLookup : "";
+
+        var candidates = [];
         if (cachedLookup) {
-            var ordered = [];
-            for (var o = 0; o < candidates.length; o++) {
-                if (candidates[o].lookup === cachedLookup) ordered.unshift(candidates[o]);
-                else ordered.push(candidates[o]);
-            }
-            candidates = ordered;
+            var cachedEffect = null;
+            try { cachedEffect = qe.project.getVideoEffectByName(cachedLookup); } catch (eCachedEffect) { cachedEffect = null; }
+            if (cachedEffect) candidates.push({ effect: cachedEffect, lookup: cachedLookup, preferred: true });
         }
 
-        for (var c = 0; c < candidates.length; c++) {
-            var qeItem = findQeClipItem(trackIndex, startTicks, endTicks);
-            if (!qeItem) return { ok: false };
-            try {
-                qeItem.addVideoEffect(candidates[c].effect);
-            } catch (eAdd) {
-                continue;
-            }
+        function tryCandidates(list) {
+            var qeItem = findQeClipItem(trackIndex, startTicks, endTicks, qeSequence);
+            for (var c = 0; c < list.length; c++) {
+                if (!qeItem) {
+                    qeItem = findQeClipItem(trackIndex, startTicks, endTicks, qeSequence);
+                    if (!qeItem) return { ok: false };
+                }
+                try {
+                    qeItem.addVideoEffect(list[c].effect);
+                } catch (eAdd) {
+                    continue;
+                }
 
-            var added = findAddedComponent(track, startTicks, endTicks);
-            if (!added) {
-                if (!replaceLayer()) return { ok: false };
-                continue;
-            }
+                var added = findAddedComponent(track, startTicks, endTicks, layerPosition);
+                if (!added) {
+                    layerPosition = replaceLayer();
+                    if (layerPosition < 0) return { ok: false };
+                    qeItem = null;
+                    continue;
+                }
 
-            var exact = added.matchName === preset.matchName;
-            var sameEffect = /Geometry/.test(added.matchName) && /Geometry/.test(preset.matchName);
-            var sameControls = sameEffect && propertyCount(added.component) === preset.params.length;
-            if (!exact && !sameControls) {
-                if (!replaceLayer()) return { ok: false };
-                continue;
-            }
+                var exact = added.matchName === preset.matchName;
+                var sameEffect = /Geometry/.test(added.matchName) && /Geometry/.test(preset.matchName);
+                var sameControls = sameEffect && propertyCount(added.component) === preset.params.length;
+                if (!exact && !sameControls) {
+                    layerPosition = replaceLayer();
+                    if (layerPosition < 0) return { ok: false };
+                    qeItem = null;
+                    continue;
+                }
 
-            if (!writePresetValues(added.component, preset)) {
-                if (!replaceLayer()) return { ok: false };
-                continue;
+                if (!writePresetValues(added.component, preset)) {
+                    layerPosition = replaceLayer();
+                    if (layerPosition < 0) return { ok: false };
+                    qeItem = null;
+                    continue;
+                }
+                cache.effectCacheKey = cacheKey;
+                cache.effectLookup = list[c].lookup;
+                return { ok: true, exact: exact };
             }
-            cache.effectCacheKey = cacheKey;
-            cache.effectLookup = candidates[c].lookup;
-            return { ok: true, exact: exact };
+            return { ok: false };
         }
-        return { ok: false };
+
+        // The cached lookup is just an optimisation; if it stops working (new
+        // project, different effect set) fall back to a full lookup once.
+        if (candidates.length > 0) {
+            var cachedResult = tryCandidates(candidates);
+            if (cachedResult.ok) return cachedResult;
+        }
+        return tryCandidates(presetEffectCandidates(preset));
     }
 
     // A clip collides only when its range actually intersects the target range.
     // Ranges are half-open, so a clip ending exactly at startTicks (or starting
     // exactly at endTicks) does not block the insertion.
-    function isTrackFree(track, startTicks, endTicks) {
+    function isTrackFree(track, startTicks, endTicks, timeline, trackIndex) {
         var locked = false;
         try { locked = track.isLocked() === true; } catch (eLocked) { locked = false; }
         if (locked) return false;
+
+        var entry = (timeline && typeof trackIndex === "number") ? indexTrack(timeline, trackIndex) : null;
+        if (entry) {
+            var ranges = entry.ranges;
+            for (var r = 0; r < ranges.length; r++) {
+                if (ranges[r].start < endTicks && ranges[r].end > startTicks) return false;
+            }
+            return true;
+        }
 
         var count = 0;
         try { count = track.clips.numItems; } catch (eCount) { count = 0; }
@@ -901,12 +1183,13 @@
         var insertedLayers = [];
         var trackAdded = false;
         var usedLegacyTransform = false;
+        var timeline = null;
 
         function restoreInserted() {
             var restored = true;
             for (var k = insertedLayers.length - 1; k >= 0; k--) {
                 var record = insertedLayers[k];
-                if (!rollbackLayer(record.track, record.startTicks, record.endTicks)) restored = false;
+                if (!rollbackLayer(record.track, record.startTicks, record.endTicks, timeline, record.trackIndex)) restored = false;
             }
             insertedLayers = [];
             return restored;
@@ -934,9 +1217,11 @@
 
             var sequence = null;
             try { sequence = project.activeSequence; } catch (eSequence) { sequence = null; }
-            if (!sequence || !sequenceBelongsToProject(project, sequence)) {
+            if (!activeSequenceReadable(sequence)) {
                 return response(false, "NO_ACTIVE_SEQUENCE", "Open a sequence first.");
             }
+
+            timeline = buildTimelineIndex(sequence);
 
             var selection = selectionItems(sequence);
             if (selection.length === 0) {
@@ -948,7 +1233,7 @@
                 return response(false, "NOT_VIDEO_CLIP", "Select a video clip, not an audio or other item.");
             }
 
-            var map = videoClipMap(sequence);
+            var map = selectedVideoMap(sequence, videoSelection);
             var jobs = [];
             var seen = {};
             for (var s = 0; s < videoSelection.length; s++) {
@@ -1058,57 +1343,85 @@
                     }
 
                     var candidate = sequence.videoTracks[targetIndex];
-                    if (isTrackFree(candidate, job.startTicks, job.endTicks)) {
+                    if (isTrackFree(candidate, job.startTicks, job.endTicks, timeline, targetIndex)) {
                         targetTrack = candidate;
                         break;
                     }
                 }
 
-                var placeLayer = (function (track, startTicks, endTicks) {
+                var placedPosition = -1;
+                var placeLayer = (function (track, trackIndex, startTicks, endTicks) {
                     return function () {
-                        var before = snapshotTimeline(sequence);
+                        placedPosition = -1;
+                        var entry = indexTrack(timeline, trackIndex);
+                        var countBefore = -1;
+                        try { countBefore = track.clips.numItems; } catch (eBefore) { countBefore = -1; }
                         var insertTime = new Time();
                         insertTime.ticks = String(startTicks);
                         try {
                             track.overwriteClip(item, insertTime);
                         } catch (eInsert) {
+                            dropTrackIndex(timeline, trackIndex);
                             return false;
                         }
-                        var after = snapshotTimeline(sequence);
-                        var difference = diffTimeline(before, after);
-                        var layer = findInsertedLayer(track, startTicks, endTicks);
-                        var verified = !!layer &&
-                            difference.removed.length === 0 &&
-                            difference.changed.length === 0 &&
-                            difference.added.length === 1;
-                        if (!verified) {
-                            rollbackLayer(track, startTicks, endTicks);
+                        var countAfter = -1;
+                        try { countAfter = track.clips.numItems; } catch (eAfter) { countAfter = -1; }
+
+                        // The range was checked empty, so a correct insert adds
+                        // exactly one clip. Anything else means the timeline
+                        // changed underneath us: remove only the layer we put
+                        // here and fail instead of touching other clips.
+                        if (countBefore < 0 || countAfter !== countBefore + 1) {
+                            rollbackLayer(track, startTicks, endTicks, timeline, trackIndex);
                             return false;
                         }
+
+                        var guess = -1;
+                        if (entry) {
+                            guess = 0;
+                            while (guess < entry.ranges.length && entry.ranges[guess].start < startTicks) guess++;
+                        }
+                        var position = locateLayerAt(track, startTicks, endTicks, guess);
+                        var layer = getClipAt(track, position);
+                        var isLayer = false;
+                        if (layer) {
+                            try { isLayer = layer.isAdjustmentLayer() === true; } catch (eLayer) { isLayer = false; }
+                        }
+                        if (!isLayer) {
+                            rollbackLayer(track, startTicks, endTicks, timeline, trackIndex);
+                            return false;
+                        }
+                        placedPosition = position;
+                        if (entry) indexInsert(timeline, trackIndex, startTicks, endTicks);
                         return true;
                     };
-                })(targetTrack, job.startTicks, job.endTicks);
+                })(targetTrack, targetIndex, job.startTicks, job.endTicks);
 
                 var replaceLayer = (function (track, startTicks, endTicks) {
                     return function () {
-                        if (!rollbackLayer(track, startTicks, endTicks)) return false;
-                        return placeLayer();
+                        if (!rollbackLayer(track, startTicks, endTicks, timeline, targetIndex)) return -1;
+                        if (!placeLayer()) return -1;
+                        return placedPosition;
                     };
                 })(targetTrack, job.startTicks, job.endTicks);
 
                 if (!placeLayer()) {
+                    // A stale cached item is the likely cause; rebuild it on
+                    // the next click instead of failing the same way again.
+                    invalidateAdjustmentCache();
                     return fail("PLACEMENT_FAILED", "An adjustment layer could not be placed.");
                 }
 
-                var presetResult = applyLayerPreset(preset, targetIndex, targetTrack, job.startTicks, job.endTicks, replaceLayer);
+                var presetResult = applyLayerPreset(preset, targetIndex, targetTrack, job.startTicks, job.endTicks, replaceLayer, placedPosition);
                 if (!presetResult.ok) {
-                    rollbackLayer(targetTrack, job.startTicks, job.endTicks);
+                    rollbackLayer(targetTrack, job.startTicks, job.endTicks, timeline, targetIndex);
                     return fail("PRESET_FAILED", "Could not apply the Transform(openClick) preset.");
                 }
                 if (!presetResult.exact) usedLegacyTransform = true;
 
                 insertedLayers.push({
                     track: targetTrack,
+                    trackIndex: targetIndex,
                     startTicks: job.startTicks,
                     endTicks: job.endTicks
                 });
@@ -1172,7 +1485,10 @@
         return id;
     }
 
-    function allClipEntries(sequence) {
+    // Reading in/out points is two extra host calls per clip, and only nest
+    // expansion needs them. Everything else scans without marks so long
+    // timelines stay quick.
+    function allClipEntries(sequence, needMarks) {
         var entries = [];
         var groups = [
             { type: "video", tracks: sequence.videoTracks },
@@ -1189,8 +1505,10 @@
                     var clip = track.clips[c];
                     var inTicks = NaN;
                     var outTicks = NaN;
-                    try { inTicks = ticksOf(clip.inPoint); } catch (eIn) { inTicks = NaN; }
-                    try { outTicks = ticksOf(clip.outPoint); } catch (eOut) { outTicks = NaN; }
+                    if (needMarks) {
+                        try { inTicks = ticksOf(clip.inPoint); } catch (eIn) { inTicks = NaN; }
+                        try { outTicks = ticksOf(clip.outPoint); } catch (eOut) { outTicks = NaN; }
+                    }
                     entries.push({
                         type: groups[g].type,
                         trackIndex: t,
@@ -1219,17 +1537,40 @@
         return map;
     }
 
-    function applySelection(sequence, wanted) {
+    // byNodeId, when supplied, is the map built once from the timeline scan the
+    // caller already performed, so selecting a plan does not rescan every clip.
+    function applySelection(sequence, wanted, byNodeId) {
+        if (byNodeId) {
+            var current = selectionItems(sequence);
+            var i;
+            for (i = 0; i < current.length; i++) {
+                var currentId = clipNodeId(current[i]);
+                if (currentId && wanted[currentId]) continue;
+                // Every change is flushed: Premiere can keep the previous
+                // plan's clips selected if only the final item updates the UI,
+                // and then createSubsequence() would include the wrong clips.
+                try { current[i].setSelected(false, true); } catch (eDeselect) {}
+            }
+            for (var id in wanted) {
+                if (!wanted[id]) continue;
+                var entry = byNodeId[id];
+                if (!entry) continue;
+                var selected = false;
+                try { selected = !!entry.clip.isSelected(); } catch (eSelected) { selected = false; }
+                if (!selected) {
+                    try { entry.clip.setSelected(true, true); } catch (eSelect) {}
+                }
+            }
+            return;
+        }
+
         var entries = allClipEntries(sequence);
-        for (var i = 0; i < entries.length; i++) {
-            var entry = entries[i];
+        for (var e = 0; e < entries.length; e++) {
+            var entry = entries[e];
             var want = !!(entry.nodeId && wanted[entry.nodeId]);
-            var current = false;
-            try { current = !!entry.clip.isSelected(); } catch (eSel) { current = false; }
-            if (current === want) continue;
-            // Every change is flushed: Premiere can keep the previous plan's
-            // clips selected if only the final item updates the UI, and then
-            // createSubsequence() would include clips from the wrong plan.
+            var isSelected = false;
+            try { isSelected = !!entry.clip.isSelected(); } catch (eSel) { isSelected = false; }
+            if (isSelected === want) continue;
             try { entry.clip.setSelected(want, true); } catch (eSet) {}
         }
     }
@@ -1245,15 +1586,23 @@
         return true;
     }
 
-    function ensureSelection(sequence, wanted) {
-        applySelection(sequence, wanted);
+    function ensureSelection(sequence, wanted, byNodeId) {
+        applySelection(sequence, wanted, byNodeId);
         if (!selectionMatches(sequence, wanted)) {
-            applySelection(sequence, wanted);
+            applySelection(sequence, wanted, byNodeId);
         }
     }
 
+    // createSubsequence() can leave the new nest active, so this only opens the
+    // sequence when it is not already in front. Reopening on every click made
+    // the panel lag in large projects.
     function activateSequence(project, sequence) {
         if (!project || !sequence) return;
+        var activeId = "";
+        try { activeId = String(project.activeSequence.sequenceID); } catch (eActive) { activeId = ""; }
+        var wantedId = "";
+        try { wantedId = String(sequence.sequenceID); } catch (eWanted) { wantedId = ""; }
+        if (activeId && wantedId && activeId === wantedId) return;
         try { project.openSequence(sequence.sequenceID); } catch (eOpen) {}
     }
 
@@ -1584,7 +1933,7 @@
             }
         }
 
-        return { plans: plans, entries: entries };
+        return { plans: plans, entries: entries, byNodeId: byNodeId };
     }
 
     function validateNestPlan(sequence, plan, entries) {
@@ -1732,7 +2081,7 @@
     function createNestPlanSubsequence(ctx, plan, index, planCount) {
         var sequence = ctx.sequence;
         activateSequence(ctx.project, sequence);
-        ensureSelection(sequence, plan.selection);
+        ensureSelection(sequence, plan.selection, ctx.byNodeId);
         if (ctx.savedTargeting && ctx.savedTargeting.supported) {
             applyCreationTargeting(sequence, plan);
         }
@@ -1782,9 +2131,36 @@
         return snapshot;
     }
 
+    // A nest insert only writes to the destination tracks and removes the
+    // plan's own source clips, so those are the only tracks that need a
+    // before/after inventory. This keeps the check cheap on long timelines.
+    function nestSnapshotTracks(sequence, plan) {
+        var videoIndices = [];
+        var audioIndices = [];
+        var i;
+        for (i = 0; i < plan.videoTrackIndices.length; i++) videoIndices.push(plan.videoTrackIndices[i]);
+        if (plan.destVideoTrackIndex >= 0) videoIndices.push(plan.destVideoTrackIndex);
+        for (i = 0; i < plan.audioTrackIndices.length; i++) audioIndices.push(plan.audioTrackIndices[i]);
+        if (plan.destAudioTrackIndex >= 0) audioIndices.push(plan.destAudioTrackIndex);
+        return snapshotTracks(sequence, videoIndices, audioIndices);
+    }
+
     function findNestClip(sequence, nodeId) {
         if (!nodeId) return null;
         var entries = allClipEntries(sequence);
+        for (var i = 0; i < entries.length; i++) {
+            if (entries[i].nodeId === nodeId) return entries[i];
+        }
+        return null;
+    }
+
+    function findNestClipOnTrack(sequence, nodeId, type, trackIndex) {
+        if (!nodeId) return null;
+        var tracks = type === "video" ? sequence.videoTracks : sequence.audioTracks;
+        var track = null;
+        try { track = tracks[trackIndex]; } catch (eTrack) { track = null; }
+        if (!track) return null;
+        var entries = entriesOnTrack(track, type, trackIndex);
         for (var i = 0; i < entries.length; i++) {
             if (entries[i].nodeId === nodeId) return entries[i];
         }
@@ -1798,18 +2174,63 @@
         return !findNestClip(sequence, nodeId);
     }
 
-    function nestedEntriesFor(sequence, itemNodeId) {
-        var entries = allClipEntries(sequence);
+    // Removals happen on known tracks; scanning just that track keeps multi-clip
+    // nests linear instead of scanning the whole timeline per clip.
+    function removeNestClipAt(sequence, nodeId, type, trackIndex) {
+        var entry = findNestClipOnTrack(sequence, nodeId, type, trackIndex);
+        if (!entry) return true;
+        try { entry.clip.remove(0, 0); } catch (e) { return false; }
+        return !findNestClipOnTrack(sequence, nodeId, type, trackIndex);
+    }
+
+    function entriesOnTrack(track, type, trackIndex) {
+        var entries = [];
+        var count = 0;
+        try { count = track.clips.numItems; } catch (eCount) { count = 0; }
+        for (var c = 0; c < count; c++) {
+            var clip = track.clips[c];
+            entries.push({
+                type: type,
+                trackIndex: trackIndex,
+                track: track,
+                clip: clip,
+                nodeId: clipNodeId(clip),
+                projectItemNodeId: clipProjectItemId(clip),
+                startTicks: ticksOf(clip.start),
+                endTicks: ticksOf(clip.end)
+            });
+        }
+        return entries;
+    }
+
+    // The nest insert only writes the destination video track; linked audio can
+    // only appear on audio tracks. Scanning just those beats reading every
+    // video clip in a long sequence.
+    function nestedEntriesForPlan(sequence, plan) {
         var result = [];
-        if (!itemNodeId) return result;
-        for (var i = 0; i < entries.length; i++) {
-            if (entries[i].projectItemNodeId === itemNodeId) result.push(entries[i]);
+        if (!plan.nestedItemNodeId) return result;
+
+        var videoTrack = null;
+        try { videoTrack = sequence.videoTracks[plan.destVideoTrackIndex]; } catch (eVideo) { videoTrack = null; }
+        if (videoTrack) {
+            var videos = entriesOnTrack(videoTrack, "video", plan.destVideoTrackIndex);
+            for (var v = 0; v < videos.length; v++) {
+                if (videos[v].projectItemNodeId === plan.nestedItemNodeId) result.push(videos[v]);
+            }
+        }
+
+        var audioCount = trackCountOf(sequence.audioTracks);
+        for (var a = 0; a < audioCount; a++) {
+            var audios = entriesOnTrack(sequence.audioTracks[a], "audio", a);
+            for (var i = 0; i < audios.length; i++) {
+                if (audios[i].projectItemNodeId === plan.nestedItemNodeId) result.push(audios[i]);
+            }
         }
         return result;
     }
 
     function pruneNestedClips(sequence, plan, wantsAudio) {
-        var nested = nestedEntriesFor(sequence, plan.nestedItemNodeId);
+        var nested = nestedEntriesForPlan(sequence, plan);
         var keepVideo = null;
         var keepAudio = null;
         var fallbackVideo = null;
@@ -1840,7 +2261,7 @@
     }
 
     function nestedVideoAt(sequence, plan) {
-        var entries = nestedEntriesFor(sequence, plan.nestedItemNodeId);
+        var entries = nestedEntriesForPlan(sequence, plan);
         for (var i = 0; i < entries.length; i++) {
             var entry = entries[i];
             if (entry.type === "video" && entry.trackIndex === plan.destVideoTrackIndex && sameNestRange(entry, plan)) {
@@ -1855,7 +2276,7 @@
         var insertTime = new Time();
         insertTime.ticks = String(plan.startTicks);
 
-        var before = snapshotNestTimeline(sequence);
+        var before = nestSnapshotTracks(sequence, plan);
         ctx.timelineTouched = true;
         if (ctx.savedTargeting && ctx.savedTargeting.supported) {
             applyInsertionTargeting(sequence, plan);
@@ -1882,14 +2303,14 @@
             for (i = 0; i < plan.videoJobs.length; i++) {
                 var videoJob = plan.videoJobs[i];
                 if (videoJob.trackIndex === plan.destVideoTrackIndex) continue;
-                if (!removeNestClip(sequence, videoJob.nodeId)) {
+                if (!removeNestClipAt(sequence, videoJob.nodeId, "video", videoJob.trackIndex)) {
                     failNest("REMOVE_FAILED", "An original clip could not be removed from the timeline.");
                 }
             }
             for (i = 0; i < plan.audioJobs.length; i++) {
                 var audioJob = plan.audioJobs[i];
                 if (audioJob.trackIndex === plan.destAudioTrackIndex) continue;
-                if (!removeNestClip(sequence, audioJob.nodeId)) {
+                if (!removeNestClipAt(sequence, audioJob.nodeId, "audio", audioJob.trackIndex)) {
                     failNest("REMOVE_FAILED", "An original audio clip could not be removed from the timeline.");
                 }
             }
@@ -1919,7 +2340,7 @@
         plan.insertedVideoNodeId = pruned.video.nodeId;
         plan.insertedAudioNodeId = pruned.audio ? pruned.audio.nodeId : "";
 
-        var after = snapshotNestTimeline(sequence);
+        var after = nestSnapshotTracks(sequence, plan);
         var difference = diffTimeline(before, after);
         var verified = verifyNestDiff(difference, plan, wantsAudio);
         if (!verified.ok) {
@@ -2103,12 +2524,13 @@
 
             var sequence = null;
             try { sequence = project.activeSequence; } catch (eSequence) { sequence = null; }
-            if (!sequence || !sequenceBelongsToProject(project, sequence)) {
+            if (!activeSequenceReadable(sequence)) {
                 failNest("NO_ACTIVE_SEQUENCE", "Open a sequence first.");
             }
             ctx.sequence = sequence;
 
             var built = buildNestPlans(sequence, combined);
+            ctx.byNodeId = built.byNodeId;
             var plans = built.plans;
             var i;
             for (i = 0; i < plans.length; i++) {
@@ -2344,60 +2766,42 @@
         deleteProjectItem(ctx.project, record.item);
     }
 
-    function idSetOf(sequence) {
-        var entries = allClipEntries(sequence);
-        var set = {};
-        for (var i = 0; i < entries.length; i++) {
-            set[entries[i].nodeId] = true;
+    function trackClipIds(track) {
+        var ids = {};
+        var count = 0;
+        try { count = track.clips.numItems; } catch (eCount) { count = 0; }
+        for (var c = 0; c < count; c++) {
+            var id = clipNodeId(track.clips[c]);
+            if (id) ids[id] = true;
         }
-        return set;
+        return ids;
     }
 
-    function eachNewClip(ctx, baseIds, visit) {
-        var entries = allClipEntries(ctx.sequence);
+    // An overwrite can only change the track it targets, so placement checks
+    // stay on that track instead of rescanning the whole sequence.
+    function newClipOnTrack(track, kind, trackIndex, baseIds, match) {
+        var entries = entriesOnTrack(track, kind, trackIndex);
         for (var i = 0; i < entries.length; i++) {
-            var entry = entries[i];
-            if (baseIds[entry.nodeId]) continue;
-            if (visit(entry) === false) return;
+            if (baseIds[entries[i].nodeId]) continue;
+            if (match(entries[i])) return entries[i];
         }
+        return null;
     }
 
-    // Placement is verified by position, not by project-item id: Premiere can
-    // hand the timeline a different item reference than the one passed in.
-    function findNewClipAt(ctx, baseIds, type, trackIndex, startTicks, duration, tolerance) {
-        var found = null;
-        eachNewClip(ctx, baseIds, function (entry) {
-            if (entry.type !== type || entry.trackIndex !== trackIndex) return;
-            if (Math.abs(entry.startTicks - startTicks) > tolerance) return;
-            if (Math.abs((entry.endTicks - entry.startTicks) - duration) > tolerance) return;
-            found = entry;
-            return false;
-        });
-        return found;
-    }
-
-    function describeNewClip(ctx, baseIds, type, trackIndex) {
-        var text = "";
-        eachNewClip(ctx, baseIds, function (entry) {
-            if (entry.type !== type || entry.trackIndex !== trackIndex) return;
-            text = "at " + secondsText(entry.startTicks) + " for " +
-                secondsText(entry.endTicks - entry.startTicks);
-            return false;
-        });
-        return text || "no-new-clip";
-    }
-
-    function removeNewClips(ctx, baseIds) {
+    function removeNewClipsOnTrack(track, kind, trackIndex, baseIds) {
         for (;;) {
-            var found = null;
-            eachNewClip(ctx, baseIds, function (entry) {
-                found = entry;
-                return false;
-            });
+            var found = newClipOnTrack(track, kind, trackIndex, baseIds, function () { return true; });
             if (!found) return;
             baseIds[found.nodeId] = true;
             try { found.clip.remove(0, 0); } catch (eRemove) {}
         }
+    }
+
+    function describeNewClipOnTrack(track, kind, trackIndex, baseIds) {
+        var entry = newClipOnTrack(track, kind, trackIndex, baseIds, function () { return true; });
+        if (!entry) return "no-new-clip";
+        return "at " + secondsText(entry.startTicks) + " for " +
+            secondsText(entry.endTicks - entry.startTicks);
     }
 
     function insertTrimmed(ctx, tolerance, trackIndex, track, sourceItem, kind, startTicks, inTicks, outTicks) {
@@ -2420,6 +2824,7 @@
             var sub = createTrimmedItem(ctx, tolerance, sourceItem, kind, inTicks, outTicks);
             if (!sub) {
                 ctx.trimDetail = ctx.trimDetail || "subclip-unavailable";
+                ctx.trimFailed = true;
                 return null;
             }
             item = sub.item;
@@ -2427,28 +2832,55 @@
             via = sub.via;
         }
 
-        var base = idSetOf(ctx.sequence);
+        var itemNodeId = clipNodeId(item);
+        var base = trackClipIds(track);
+        var matchesTarget = function (entry) {
+            return Math.abs(entry.startTicks - startTicks) <= tolerance &&
+                Math.abs((entry.endTicks - entry.startTicks) - duration) <= tolerance;
+        };
+
         var placed = false;
-        try { placed = !!track.overwriteClip(item, time); } catch (eOverwrite) { placed = false; }
-        var found = findNewClipAt(ctx, base, kind, trackIndex, startTicks, duration, tolerance);
+        var found = null;
+        try {
+            placed = !!track.overwriteClip(item, time);
+        } catch (eOverwrite) { placed = false; }
+        found = newClipOnTrack(track, kind, trackIndex, base, matchesTarget);
+
+        // Some builds drop the first overwrite after a project change, and
+        // nothing has been placed yet, so retrying once is safe.
+        if (!found) {
+            try { placed = !!track.overwriteClip(item, time); } catch (eRetry) { placed = false; }
+            found = newClipOnTrack(track, kind, trackIndex, base, matchesTarget);
+        }
+
         if (found) {
             if (owned) parkTrimmedItem(ctx, item);
             return { nodeId: found.nodeId, item: owned ? item : null, owned: owned, via: via };
         }
 
+        // Placement is verified by position, not by project-item id: Premiere
+        // can hand the timeline a different item reference than the one passed
+        // in. An item match at another time is still worth reporting.
+        var wrongTime = newClipOnTrack(track, kind, trackIndex, base, function (entry) {
+            return !!itemNodeId && entry.projectItemNodeId === itemNodeId;
+        });
         ctx.trimDetail = via + (placed ? "-misplaced " : "-not-placed ") +
-            describeNewClip(ctx, base, kind, trackIndex);
-        removeNewClips(ctx, base);
+            (wrongTime
+                ? "at " + secondsText(wrongTime.startTicks)
+                : describeNewClipOnTrack(track, kind, trackIndex, base));
+        removeNewClipsOnTrack(track, kind, trackIndex, base);
         if (owned) deleteProjectItem(ctx.project, item);
         return null;
     }
 
     function findClipAt(sequence, type, trackIndex, itemNodeId, startTicks, duration, tolerance) {
-        var entries = allClipEntries(sequence);
+        var tracks = type === "video" ? sequence.videoTracks : sequence.audioTracks;
+        var track = null;
+        try { track = tracks[trackIndex]; } catch (eTrack) { track = null; }
+        if (!track) return null;
+        var entries = entriesOnTrack(track, type, trackIndex);
         for (var i = 0; i < entries.length; i++) {
             var entry = entries[i];
-            if (entry.type !== type) continue;
-            if (entry.trackIndex !== trackIndex) continue;
             if (entry.projectItemNodeId !== itemNodeId) continue;
             if (Math.abs(entry.startTicks - startTicks) > tolerance) continue;
             if (Math.abs((entry.endTicks - entry.startTicks) - duration) > tolerance) continue;
@@ -2458,20 +2890,22 @@
     }
 
     function findNewAudioAt(sequence, startTicks, duration, tolerance, beforeIds) {
-        var entries = allClipEntries(sequence);
-        for (var i = 0; i < entries.length; i++) {
-            var entry = entries[i];
-            if (entry.type !== "audio") continue;
-            if (beforeIds[entry.nodeId]) continue;
-            if (Math.abs(entry.startTicks - startTicks) > tolerance) continue;
-            if (Math.abs((entry.endTicks - entry.startTicks) - duration) > tolerance) continue;
-            return entry;
+        var audioCount = trackCountOf(sequence.audioTracks);
+        for (var t = 0; t < audioCount; t++) {
+            var entries = entriesOnTrack(sequence.audioTracks[t], "audio", t);
+            for (var i = 0; i < entries.length; i++) {
+                var entry = entries[i];
+                if (beforeIds[entry.nodeId]) continue;
+                if (Math.abs(entry.startTicks - startTicks) > tolerance) continue;
+                if (Math.abs((entry.endTicks - entry.startTicks) - duration) > tolerance) continue;
+                return entry;
+            }
         }
         return null;
     }
 
     function planNestGroup(ctx, group, seqByItem, tolerance) {
-        var nestedEntries = allClipEntries(group.nestSequence);
+        var nestedEntries = allClipEntries(group.nestSequence, true);
         if (!nestedEntries.length) {
             failUnnest("EMPTY_NEST", "One of the nested clips is empty and cannot be expanded.");
         }
@@ -2517,43 +2951,16 @@
         return plan;
     }
 
-    function probeTrimmedInsert(ctx, plans, tolerance, maxEnd) {
-        var sample = null;
-        var i;
-        var j;
-        for (i = 0; i < plans.length && !sample; i++) {
-            for (j = 0; j < plans[i].items.length; j++) {
-                var candidate = plans[i].items[j];
-                if (!isFinite(candidate.inTicks) || !isFinite(candidate.outTicks)) continue;
-                var fullOut = NaN;
-                try { fullOut = ticksOf(candidate.item.getOutPoint(4)); } catch (eOut) { fullOut = NaN; }
-                var trimmed = candidate.inTicks > NEST_TOLERANCE_TICKS ||
-                    (isFinite(fullOut) && candidate.outTicks < fullOut - tolerance);
-                if (trimmed) { sample = candidate; break; }
-            }
-        }
-        if (!sample) return;
-
-        var tracks = sample.type === "video" ? ctx.sequence.videoTracks : ctx.sequence.audioTracks;
-        var probeStart = maxEnd + tolerance * 2;
-        var base = idSetOf(ctx.sequence);
-        var record = insertTrimmed(ctx, tolerance, sample.trackIndex, tracks[sample.trackIndex],
-            sample.item, sample.type, probeStart, sample.inTicks, sample.outTicks);
-        if (record) {
-            removeNewClips(ctx, base);
-            discardTrimmedItem(ctx, record);
-        }
-        if (!record) {
-            failUnnest("UNNEST_TRIM_UNSUPPORTED",
-                "Premiere did not accept the trimmed source range for unnesting. Nothing was changed. (" +
-                (ctx.trimDetail || "no-probe") + ")");
-        }
-    }
-
+    // Premiere can refuse a trimmed overwrite. Probing it by inserting beyond
+    // the sequence end produced false failures (the insert was clipped or
+    // dropped there), so the real placement is the only verification: the
+    // subclip's duration is validated first, then the resulting timeline clip
+    // is checked by position, and a failed group rolls back.
     function removeNestGroupClips(sequence, group) {
-        removeNestClip(sequence, group.anchor.nodeId);
+        removeNestClipAt(sequence, group.anchor.nodeId, group.anchor.type, group.anchor.trackIndex);
         for (var i = 0; i < group.audioParts.length; i++) {
-            removeNestClip(sequence, group.audioParts[i].nodeId);
+            var part = group.audioParts[i];
+            removeNestClipAt(sequence, part.nodeId, "audio", part.trackIndex);
         }
     }
 
@@ -2630,15 +3037,21 @@
                 }
 
                 if (!record) {
+                    if (ctx.trimFailed) {
+                        failUnnest("UNNEST_TRIM_UNSUPPORTED",
+                            "Premiere did not accept the trimmed source range for unnesting. Nothing was changed. (" +
+                            (ctx.trimDetail || "no-subclip") + ")");
+                    }
                     failUnnest(item.type === "audio" ? "UNNEST_AUDIO_FAILED" : "UNNEST_INSERT_FAILED",
-                        "A clip inside a nest could not be placed back on the timeline.");
+                        "A clip inside a nest could not be placed back on the timeline. (" +
+                        (ctx.trimDetail || "no-detail") + ")");
                 }
                 inserted.push(record);
             }
 
             removeNestGroupClips(sequence, group);
 
-            if (findNestClip(sequence, group.anchor.nodeId)) {
+            if (findNestClipOnTrack(sequence, group.anchor.nodeId, group.anchor.type, group.anchor.trackIndex)) {
                 failUnnest("UNNEST_NEST_REMAINS", "A nested clip could not be removed from the timeline.");
             }
             return inserted;
@@ -2697,7 +3110,9 @@
             seqByItem: null,
             expandedGroups: 0,
             totalGroups: 0,
-            selection: null
+            selection: null,
+            trimDetail: "",
+            trimFailed: false
         };
 
         try {
@@ -2710,7 +3125,7 @@
 
             var sequence = null;
             try { sequence = project.activeSequence; } catch (eSequence) { sequence = null; }
-            if (!sequence || !sequenceBelongsToProject(project, sequence)) {
+            if (!activeSequenceReadable(sequence)) {
                 failUnnest("NO_ACTIVE_SEQUENCE", "Open a sequence first.");
             }
             ctx.sequence = sequence;
@@ -2725,18 +3140,15 @@
             var tolerance = frameTicksOf(sequence) + NEST_TOLERANCE_TICKS;
             var plans = [];
             var i;
-            var maxEnd = 0;
             var before = snapshotNestTimeline(sequence);
             for (i = 0; i < before.length; i++) {
                 ctx.beforeIds[before[i].nodeId] = true;
-                if (isFinite(before[i].endTicks) && before[i].endTicks > maxEnd) maxEnd = before[i].endTicks;
             }
 
             for (i = 0; i < groups.length; i++) {
                 plans.push(planNestGroup(ctx, groups[i], seqByItem, tolerance));
             }
             ctx.totalGroups = groups.length;
-            probeTrimmedInsert(ctx, plans, tolerance, maxEnd);
 
             var selection = {};
             var clipCount = 0;

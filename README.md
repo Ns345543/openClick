@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ns345543/openClick/releases/latest"><img src="https://img.shields.io/badge/version-1.0.3-2f81f7?style=flat-square" alt="Version 1.0.3"></a>
+  <a href="https://github.com/Ns345543/openClick/releases/latest"><img src="https://img.shields.io/badge/version-1.0.4-2f81f7?style=flat-square" alt="Version 1.0.4"></a>
   <img src="https://img.shields.io/badge/Premiere%20Pro-2022%2B-9999ff?style=flat-square" alt="Premiere Pro 2022 or newer">
   <img src="https://img.shields.io/badge/CEP-9%2B-232323?style=flat-square" alt="CEP 9 or newer">
   <img src="https://img.shields.io/badge/tested-2026%2026.5.2.5-2ea44f?style=flat-square" alt="Tested on Premiere Pro 2026 26.5.2.5">
@@ -277,6 +277,18 @@ ZXPSignCmd -verify dist/openClick.zxp -certInfo
 The manual ZIP is built from `build/zip/`, which contains `INSTALL.txt` and the
 `com.openclick2` folder, using any ZIP tool that preserves relative paths. `build.cmd`
 runs the packaging script on Windows.
+
+## Release notes: 1.0.4
+
+- Adding adjustment layers is faster and smoother, especially in large projects: the
+  timeline is indexed once per click instead of being scanned again for every layer.
+- Placement is verified locally, so existing clips are still never moved, trimmed,
+  replaced, or deleted.
+- Nesting large selections is faster because the timeline is no longer re-scanned for
+  every clip.
+- Fixed Alt+click unnest failing with `subclip-ticks-misplaced no-new-clip`
+  (`UNNEST_TRIM_UNSUPPORTED`).
+- The panel buttons use the #005cc8 color with a hover animation.
 
 ## Release notes: 1.0.3
 

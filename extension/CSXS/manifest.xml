@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.openclick2" ExtensionBundleVersion="1.0.3" ExtensionBundleName="openClick">
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.openclick2" ExtensionBundleVersion="1.0.4" ExtensionBundleName="openClick">
   <ExtensionList>
-    <Extension Id="com.openclick2.panel" Version="1.0.3"/>
+    <Extension Id="com.openclick2.panel" Version="1.0.4"/>
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>

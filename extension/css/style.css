@@ -7,10 +7,10 @@
   --oc-tool-gap: 4px;
   --oc-toolbar-padding: 6px;
 
-  --oc-tool-bg: #1473e6;
+  --oc-tool-bg: #005cc8;
   --oc-tool-color: #ffffff;
-  --oc-tool-hover-bg: #2680eb;
-  --oc-tool-press-bg: #0d66d0;
+  --oc-tool-hover-bg: #1473e6;
+  --oc-tool-press-bg: #00479e;
   --oc-slot-bg: #2b2b2b;
   --oc-slot-border: #3a3a3a;
   --oc-focus-ring: #8b7ef8;
@@ -67,14 +67,20 @@ body {
   outline: none;
   -webkit-appearance: none;
   appearance: none;
+  transition: background-color 140ms ease, transform 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .tool:hover {
   background: var(--oc-tool-hover-bg);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.35);
 }
 
 .tool:active {
   background: var(--oc-tool-press-bg);
+  transform: translateY(0) scale(0.96);
+  box-shadow: none;
 }
 
 .tool:focus-visible {
@@ -87,6 +93,22 @@ body {
   cursor: progress;
 }
 
+.tool.busy:hover,
+.tool.busy:active {
+  transform: none;
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool,
+  .tool-icon,
+  .tool:hover,
+  .tool:active {
+    transition: none;
+    transform: none;
+  }
+}
+
 .tool-icon {
   width: 60%;
   height: 60%;
@@ -94,6 +116,15 @@ body {
   max-height: 26px;
   display: block;
   pointer-events: none;
+  transition: transform 140ms ease;
+}
+
+.tool:hover .tool-icon {
+  transform: scale(1.08);
+}
+
+.tool:active .tool-icon {
+  transform: scale(0.94);
 }
 
 .tool-slot {

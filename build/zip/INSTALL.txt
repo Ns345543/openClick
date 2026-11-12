@@ -1,4 +1,4 @@
-openClick 1.0.3
+openClick 1.0.4
 Manual installation for Adobe Premiere Pro (Windows)
 
 Requirements
